@@ -29,6 +29,11 @@ import (
 
 const WORKERS = 8
 
+var (
+	dumpFlg = flag.String("dump", "", "dumps database to an ndjson file")
+	update  = flag.Bool("update", false, "update existing peers")
+)
+
 const createSql = `
 	CREATE TABLE IF NOT EXISTS peers
 	(
@@ -77,12 +82,18 @@ type statement struct {
 }
 
 var statements = struct {
+	GetPeer      *statement
 	UpsertPeer   *statement
 	DeleteAddrs  *statement
 	AddAddr      *statement
 	DeleteProtos *statement
 	AddProtos    *statement
 }{
+	GetPeer: &statement{
+		sql: `
+			SELECT count(id) FROM peers where id = ?;
+		`,
+	},
 	UpsertPeer: &statement{
 		sql: `
 			INSERT INTO peers(id, agent, proto) VALUES (?, ?, ?) 
@@ -106,9 +117,11 @@ var statements = struct {
 type Crawler struct {
 	host host.Host
 	dht  *dht.IpfsDHT
-	db   *sql.DB
 	ds   datastore.Batching
 	id   *identify.IDService
+
+	mu sync.Mutex
+	db *sql.DB
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -146,6 +159,7 @@ func (c *Crawler) initDB() {
 	c.db = db
 
 	stmts := []*statement{
+		statements.GetPeer,
 		statements.UpsertPeer,
 		statements.DeleteAddrs,
 		statements.DeleteProtos,
@@ -218,7 +232,7 @@ Work:
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("looking for peer: %s\n", id)
+	// fmt.Printf("looking for peer: %s\n", id)
 	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
 	_, _ = c.dht.FindPeer(ctx, id)
 	cancel()
@@ -296,7 +310,23 @@ func (n *notifee) Connected(net network.Network, conn network.Conn) {
 		if err != nil {
 			panic(err)
 		}
+
 		fmt.Println(string(j))
+
+		if !*update {
+			var cnt int
+			row := statements.GetPeer.stmt.QueryRow(p.Pretty())
+			if err := row.Scan(&cnt); err != nil {
+				panic(err)
+			}
+			if cnt > 0 {
+				fmt.Println("(duplicate peer; skipping)")
+				return
+			}
+		}
+
+		n.mu.Lock()
+		defer n.mu.Unlock()
 
 		if _, err = statements.UpsertPeer.stmt.Exec(p.Pretty(), agent, protocol); err != nil {
 			panic(err)
@@ -327,7 +357,7 @@ func (*notifee) OpenedStream(network.Network, network.Stream)     {}
 func (*notifee) ClosedStream(network.Network, network.Stream)     {}
 
 func main() {
-	dumpFlg := flag.String("dump", "", "dumps database to an ndjson file")
+
 	flag.Parse()
 
 	c := NewCrawler()
