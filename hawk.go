@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -58,8 +59,16 @@ type logOutput struct {
 	Id       string
 	Agent    string
 	Protocol string
-	Addrs    []multiaddr.Multiaddr
+	Addrs    []string
 	Protos   []string
+}
+
+func (l *logOutput) reset() {
+	l.Id = ""
+	l.Agent = ""
+	l.Protocol = ""
+	l.Addrs = l.Addrs[0:0]
+	l.Protos = l.Protos[0:0]
 }
 
 type statement struct {
@@ -274,8 +283,13 @@ func (n *notifee) Connected(net network.Network, conn network.Conn) {
 			Id:       p.Pretty(),
 			Agent:    agent.(string),
 			Protocol: protocol.(string),
-			Addrs:    addrs,
-			Protos:   protos,
+			Addrs: func() (ret []string) {
+				for _, a := range addrs {
+					ret = append(ret, a.String())
+				}
+				return ret
+			}(),
+			Protos: protos,
 		}
 
 		j, err := json.Marshal(line)
@@ -313,7 +327,17 @@ func (*notifee) OpenedStream(network.Network, network.Stream)     {}
 func (*notifee) ClosedStream(network.Network, network.Stream)     {}
 
 func main() {
+	dumpFlg := flag.String("dump", "", "dumps database to an ndjson file")
+	flag.Parse()
+
 	c := NewCrawler()
+
+	if *dumpFlg != "" {
+		fmt.Println("dumping")
+		dump(c.db, *dumpFlg)
+		return
+	}
+
 	c.start()
 
 	ch := make(chan os.Signal, 1)
@@ -326,4 +350,64 @@ func main() {
 	case <-c.ctx.Done():
 		return
 	}
+}
+
+func dump(db *sql.DB, filename string) {
+	var obj logOutput
+	var str string
+
+	out, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		panic(err)
+	}
+	defer out.Close()
+
+	rows, err := db.Query("select * from peers")
+	if err != nil {
+		panic(err)
+	}
+
+	for rows.Next() {
+		obj.reset()
+
+		if err := rows.Scan(&obj.Id, &obj.Agent, &obj.Protocol); err != nil {
+			panic(err)
+		}
+
+		addrRows, err := db.Query("select addr from main.addrs where peer_id = ?", obj.Id)
+		if err != nil {
+			return
+		}
+		for addrRows.Next() {
+			if err := addrRows.Scan(&str); err != nil {
+				panic(err)
+			}
+			obj.Addrs = append(obj.Addrs, str)
+		}
+
+		protoRows, err := db.Query("select protocol from main.protocols where peer_id = ?", obj.Id)
+		if err != nil {
+			panic(err)
+		}
+		for protoRows.Next() {
+			if err := protoRows.Scan(&str); err != nil {
+				panic(err)
+			}
+			obj.Protos = append(obj.Protos, str)
+		}
+
+		j, err := json.Marshal(&obj)
+		if err != nil {
+			panic(err)
+		}
+
+		if _, err = out.WriteString(string(j)); err != nil {
+			panic(err)
+		}
+
+		if _, err = out.WriteString("\n"); err != nil {
+			panic(err)
+		}
+	}
+
 }
