@@ -11,4 +11,5 @@ require (
 	github.com/mattn/go-sqlite3 v1.10.0
 	github.com/multiformats/go-multiaddr v0.0.4
 	github.com/multiformats/go-multiaddr-dns v0.0.2
+	golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543 // indirect
 )

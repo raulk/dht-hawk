@@ -1,3 +1,4 @@
 /dht.db
 peers.db
 dht-hawk
+.DS_Store
